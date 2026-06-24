@@ -16,73 +16,115 @@ COINS = [
     "ADAUSDT",
     "DOGEUSDT",
     "LINKUSDT",
-    "AVAXUSDT",
-    "TONUSDT"
+    "AVAXUSDT"
 ]
 
-sent_signals = {}
+sent_signals = set()
+
 
 def send_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    requests.post(
-        url,
-        json={
-            "chat_id": CHAT_ID,
-            "text": text
-        }
-    )
+        requests.post(
+            url,
+            json={
+                "chat_id": CHAT_ID,
+                "text": text
+            },
+            timeout=10
+        )
+
+    except Exception as e:
+        print("Telegram Error:", e)
+
 
 def get_klines(symbol, interval="4h", limit=200):
-    url = "https://api.binance.com/api/v3/klines"
 
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "limit": limit
-    }
+    try:
 
-    data = requests.get(url, params=params).json()
+        url = "https://api.binance.com/api/v3/klines"
 
-    closes = [float(x[4]) for x in data]
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
+        }
 
-    return pd.DataFrame({
-        "close": closes
-    })
+        response = requests.get(
+            url,
+            params=params,
+            timeout=15
+        )
 
-def check_rsi_signal(symbol, timeframe):
+        data = response.json()
+
+        if not isinstance(data, list):
+            print(f"Binance Error {symbol}: {data}")
+            return None
+
+        closes = []
+
+        for candle in data:
+
+            if len(candle) < 5:
+                return None
+
+            closes.append(float(candle[4]))
+
+        return pd.DataFrame({
+            "close": closes
+        })
+
+    except Exception as e:
+
+        print(f"{symbol} error:", e)
+
+        return None
+
+
+def check_signal(symbol, timeframe):
 
     df = get_klines(symbol, timeframe)
 
-    rsi = RSIIndicator(df["close"], window=14).rsi()
+    if df is None:
+        return
 
-    current_rsi = float(rsi.iloc[-1])
-    previous_rsi = float(rsi.iloc[-2])
+    if len(df) < 50:
+        return
 
-    price = float(df["close"].iloc[-1])
+    try:
 
-    signal = None
+        rsi = RSIIndicator(
+            close=df["close"],
+            window=14
+        ).rsi()
 
-    # BUY
-    if previous_rsi < 30 and current_rsi > 30:
-        signal = "BUY"
+        current_rsi = float(rsi.iloc[-1])
+        previous_rsi = float(rsi.iloc[-2])
 
-    # SELL
-    elif previous_rsi > 70 and current_rsi < 70:
-        signal = "SELL"
+        price = float(df["close"].iloc[-1])
 
-    if signal:
+        signal = None
 
-        signal_key = f"{symbol}_{timeframe}_{signal}"
+        if previous_rsi < 30 and current_rsi > 30:
+            signal = "BUY"
 
-        if signal_key in sent_signals:
-            return
+        elif previous_rsi > 70 and current_rsi < 70:
+            signal = "SELL"
 
-        sent_signals[signal_key] = True
+        if signal:
 
-        emoji = "🟢" if signal == "BUY" else "🔴"
+            signal_key = f"{symbol}_{timeframe}_{signal}"
 
-        message = f"""
+            if signal_key in sent_signals:
+                return
+
+            sent_signals.add(signal_key)
+
+            emoji = "🟢" if signal == "BUY" else "🔴"
+
+            message = f"""
 {emoji} {signal} SIGNAL
 
 Coin: {symbol}
@@ -92,12 +134,19 @@ Price: {price:.4f}
 
 RSI: {previous_rsi:.2f} → {current_rsi:.2f}
 
+Timeframe Status: CONFIRMED
+
 Time: UTC
 """
 
-        send_message(message)
+            send_message(message)
 
-        print(message)
+            print(message)
+
+    except Exception as e:
+
+        print("RSI Error:", e)
+
 
 def run_bot():
 
@@ -109,16 +158,17 @@ def run_bot():
 
             for coin in COINS:
 
-                check_rsi_signal(coin, "4h")
-                check_rsi_signal(coin, "1d")
+                check_signal(coin, "4h")
+                check_signal(coin, "1d")
 
-            print("Check completed")
+            print("✅ Check completed")
 
         except Exception as e:
 
-            print("ERROR:", e)
+            print("MAIN ERROR:", e)
 
         time.sleep(1200)
+
 
 if __name__ == "__main__":
     run_bot()
